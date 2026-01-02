@@ -182,14 +182,46 @@ def main():
 			if args.only_videos:
 				print("Downloading only video posts (mp4)...")
 				count = 0
+				import subprocess
+				def delete_related_files(basepath):
+					exts = [".jpg", ".txt", ".json.xz", ".json", ".webp", ".mp4"]
+					for ext in exts:
+						f = basepath + ext
+						if os.path.exists(f):
+							try:
+								os.remove(f)
+								print(f"Deleted {f}")
+							except Exception:
+								print(f"Failed to delete {f}")
+
 				try:
 					for post in profile.get_posts():
 						if getattr(post, 'is_video', False):
 							L.download_post(post, target=username)
+							# Find the downloaded mp4 file
+							base = os.path.join(dest, username, f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S_UTC')}")
+							mp4_path = base + ".mp4"
+							caption = post.caption or ""
+							if os.path.exists(mp4_path):
+								print(f"Uploading {mp4_path}...")
+								try:
+									subprocess.run([
+										sys.executable,
+										os.path.join(os.path.dirname(__file__), "instagrapi_upload.py"),
+										"--video", mp4_path,
+										"--caption", caption,
+										"--session", "session.json"
+									], check=True)
+								except Exception as e:
+									print(f"Upload failed for {mp4_path}: {e}")
+								# Delete all related files
+								delete_related_files(base)
+							else:
+								print(f"Video file not found: {mp4_path}")
 							count += 1
 				except Exception as e:
-					print("Error while downloading video posts:", e)
-				print(f"Downloaded {count} video posts (if any).")
+					print("Error while downloading/uploading video posts:", e)
+				print(f"Downloaded and uploaded {count} video posts (if any).")
 			else:
 				# Download profile posts (images & videos)
 				L.download_profile(username, profile_pic_only=False)
