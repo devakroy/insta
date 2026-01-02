@@ -1,3 +1,9 @@
+# Ignore environment file containing credentials
+.env
+
+# Ignore instagrapi session file
+session.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

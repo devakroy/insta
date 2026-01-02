@@ -10,6 +10,12 @@ Only Vedio ---->
 python main.py https://www.instagram.com/instagram_username/ --dest downloads --only-videos
 ```
 
+Upload Vedio with specific path --->
+
+```bash
+python instagrapi_upload.py --video "file_path" --caption "Random_Caption" --session session.json
+```
+
 Only fetch metadata (no media):
 
 ```bash
