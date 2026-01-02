@@ -41,6 +41,7 @@ def main():
 	parser.add_argument("--login", "-l", help="Login username to access private content (optional)")
 	parser.add_argument("--dest", "-d", default=".", help="Destination folder to save data and media")
 	parser.add_argument("--no-media", action="store_true", help="Only fetch metadata, do not download media")
+	parser.add_argument("--only-videos", action="store_true", help="Download only video posts (mp4), skip images and other media")
 	args = parser.parse_args()
 
 	try:
@@ -177,8 +178,21 @@ def main():
 	if not args.no_media:
 		print("Downloading media (this may take a while)...")
 		try:
-			# Download profile posts (images & videos)
-			L.download_profile(username, profile_pic_only=False)
+			# If requested, download only video posts (mp4)
+			if args.only_videos:
+				print("Downloading only video posts (mp4)...")
+				count = 0
+				try:
+					for post in profile.get_posts():
+						if getattr(post, 'is_video', False):
+							L.download_post(post, target=username)
+							count += 1
+				except Exception as e:
+					print("Error while downloading video posts:", e)
+				print(f"Downloaded {count} video posts (if any).")
+			else:
+				# Download profile posts (images & videos)
+				L.download_profile(username, profile_pic_only=False)
 
 			# Attempt to download stories and highlights if logged in
 			if logged_in:

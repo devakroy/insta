@@ -4,6 +4,12 @@ Run the script to fetch a profile (metadata + media):
 python main.py https://www.instagram.com/instagram_username/ --dest downloads
 ```
 
+Only Vedio ---->
+
+```bash
+python main.py https://www.instagram.com/instagram_username/ --dest downloads --only-videos
+```
+
 Only fetch metadata (no media):
 
 ```bash
