@@ -1,265 +1,179 @@
-import argparse
 import getpass
 import json
 import os
-import re
+import random
 import sys
-from urllib.parse import urlparse
-
-import requests
+import time
 from instaloader import Instaloader, Profile
+from instagrapi import Client
 
-
-def extract_username(value: str) -> str:
-	value = value.strip()
-	if value.startswith("http"):
-		parsed = urlparse(value)
-		path = parsed.path.strip("/")
-		if not path:
-			raise ValueError("Couldn't extract username from URL")
-		return path.split("/")[0]
-	return value
-
-
-def profile_metadata(profile: Profile) -> dict:
-	return {
-		"username": profile.username,
-		"full_name": profile.full_name,
-		"biography": profile.biography,
-		"external_url": profile.external_url,
-		"is_private": profile.is_private,
-		"is_verified": profile.is_verified,
-		"followers": profile.followers,
-		"followees": profile.followees,
-		"mediacount": profile.mediacount,
-	}
+from instagram_reels_download import extract_username, extract_shortcode, delete_related_files, download_single_reel, download_profile_reels, download_profile
+from instagram_reels_upload import load_simple_env, create_client_with_session, upload_video
 
 
 def main():
-	parser = argparse.ArgumentParser(description="Download Instagram profile data and media (posts/videos/stories)")
-	parser.add_argument("profile", help="Instagram profile URL or username")
-	parser.add_argument("--login", "-l", help="Login username to access private content (optional)")
-	parser.add_argument("--dest", "-d", default=".", help="Destination folder to save data and media")
-	parser.add_argument("--no-media", action="store_true", help="Only fetch metadata, do not download media")
-	parser.add_argument("--only-videos", action="store_true", help="Download only video posts (mp4), skip images and other media")
-	args = parser.parse_args()
+	load_simple_env()
 
-	try:
-		username = extract_username(args.profile)
-	except Exception as e:
-		print("Error parsing profile input:", e)
-		sys.exit(1)
+	username = os.environ.get("IG_USERNAME")
+	password = os.environ.get("IG_PASSWORD")
 
-	dest = os.path.abspath(args.dest)
+	if not username:
+		username = input("Enter your Instagram username: ").strip()
+	if not password:
+		password = getpass.getpass("Enter password: ")
+
+	print("\nChoose an option:")
+	print("1. Download and upload a single reel from link")
+	print("2. Download and upload all reels from an Instagram profile")
+	print("3. Download only (from profile)")
+	print("4. Upload a video file")
+
+	choice = input("Enter choice (1-4): ").strip()
+
+	dest = "downloads"
 	os.makedirs(dest, exist_ok=True)
 
-	L = Instaloader(dirname_pattern=os.path.join(dest, "{target}"))
+	L = Instaloader(dirname_pattern=os.path.join(dest, "{target}"), quiet=True)
 
-	logged_in = False
-	if args.login:
-		password = getpass.getpass(f"Password for {args.login}: ")
+	# No login for downloading, proceed anonymously
+
+	if choice in ['1', '2', '4']:
+		# Upload client
+		cl = create_client_with_session()
+		# Check if logged in
 		try:
-			L.login(args.login, password)
-			logged_in = True
-		except Exception as e:
-			print("Login failed:", e)
-
-	try:
-		profile = Profile.from_username(L.context, username)
-	except Exception as e:
-		print("Failed to load profile:", e)
-		sys.exit(1)
-
-	meta = profile_metadata(profile)
-
-
-	# Collect posts metadata
-	posts_meta = []
-	print(f"Fetching metadata for {username} ({profile.mediacount} posts)...")
-
-	def fetch_posts_via_html(username, max_posts=50):
-		"""Fallback: scrape profile HTML for recent posts JSON (public profiles only)."""
-		url = f"https://www.instagram.com/{username}/"
-		headers = {
-			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
-			"Accept-Language": "en-US,en;q=0.9",
-		}
-		try:
-			r = requests.get(url, headers=headers, timeout=10)
-			r.raise_for_status()
-		except Exception as e:
-			print("HTML fetch failed:", e)
-			return []
-
-		# Try to extract JSON from window._sharedData or from the script that contains 'edge_owner_to_timeline_media'
-		m = re.search(r"window\._sharedData = (.*?);</script>", r.text, re.S)
-		data = None
-		if m:
+			cl.get_timeline_feed()  # test if logged in
+			print("Using existing session for uploading.")
+		except:
+			# Not logged in, login
 			try:
-				data = json.loads(m.group(1))
+				cl.login(username, password)
+				print("Logged in for uploading.")
+			except Exception as e:
+				print("Login failed for uploading:", e)
+				sys.exit(1)
+
+	if choice == '1':
+		# Single reel
+		reel_link = input("Enter the reel link: ").strip()
+		try:
+			shortcode = extract_shortcode(reel_link)
+		except ValueError as e:
+			print(e)
+			sys.exit(1)
+
+		result = download_single_reel(L, shortcode, dest)
+		if result:
+			mp4_path, caption = result
+			print(f"Uploading {mp4_path}...")
+			upload_video(cl, mp4_path, caption)
+			base = mp4_path[:-4]  # remove .mp4
+			delete_related_files(base)
+
+		download_folder = os.path.join(dest, "reel_download")
+		if os.path.isdir(download_folder):
+			try:
+				if not os.listdir(download_folder):
+					os.rmdir(download_folder)
 			except Exception:
-				data = None
+				pass
 
-		if not data:
-			# Try alternative JSON location
-			m2 = re.search(r"<script type=\"text/javascript\">\s*try\{\s*window.__additionalDataLoaded\((.*?)\);", r.text, re.S)
-			if m2:
-				try:
-					# m2 may contain two args, the second is JSON; attempt to find JSON object
-					text = m2.group(1)
-					# find first occurrence of '{' to parse
-					idx = text.find('{')
-					if idx != -1:
-						data = json.loads(text[idx:])
-				except Exception:
-					data = None
-
+	elif choice == '2':
+		# Profile reels
+		profile_input = input("Enter Instagram username or profile link: ").strip()
 		try:
-			# Navigate to timeline media in the JSON structures
-			if data and 'entry_data' in data and 'ProfilePage' in data['entry_data']:
-				user = data['entry_data']['ProfilePage'][0]['graphql']['user']
-				edges = user['edge_owner_to_timeline_media']['edges']
-			else:
-				# fallback: search for the timeline media object anywhere in the text
-				json_match = re.search(r'"edge_owner_to_timeline_media"\s*:\s*(\{.*?\})\s*,\s*"edge_followed_by"', r.text, re.S)
-				if json_match:
-					media_obj = json.loads(json_match.group(1))
-					edges = media_obj.get('edges', [])
-				else:
-					edges = []
-		except Exception:
-			edges = []
-
-		posts = []
-		for edge in edges[:max_posts]:
-			node = edge.get('node', {})
-			shortcode = node.get('shortcode')
-			posts.append(
-				{
-					'shortcode': shortcode,
-					'url': f"https://www.instagram.com/p/{shortcode}/" if shortcode else None,
-					'is_video': node.get('is_video'),
-					'likes': node.get('edge_liked_by', {}).get('count') if node.get('edge_liked_by') else None,
-					'comments': node.get('edge_media_to_comment', {}).get('count') if node.get('edge_media_to_comment') else None,
-					'date_utc': None,
-					'caption': (node.get('edge_media_to_caption', {}).get('edges') or [{}])[0].get('node', {}).get('text'),
-				}
-			)
-		return posts
-
-	if logged_in:
-		try:
-			for post in profile.get_posts():
-				posts_meta.append(
-					{
-						"shortcode": post.shortcode,
-						"url": f"https://www.instagram.com/p/{post.shortcode}/",
-						"is_video": post.is_video,
-						"likes": post.likes,
-						"comments": post.comments,
-						"date_utc": post.date_utc.isoformat(),
-						"caption": post.caption,
-					}
-				)
+			profile_username = extract_username(profile_input)
 		except Exception as e:
-			print("Error fetching posts while logged in:", e)
-	else:
-		# Anonymous: avoid GraphQL long retries; use HTML fallback for recent posts.
-		posts_meta = fetch_posts_via_html(username, max_posts=50)
+			print("Error parsing profile input:", e)
+			sys.exit(1)
 
-	meta["posts"] = posts_meta
-
-	meta_path = os.path.join(dest, f"{username}_metadata.json")
-	with open(meta_path, "w", encoding="utf-8") as f:
-		json.dump(meta, f, ensure_ascii=False, indent=2)
-
-	print("Saved metadata to", meta_path)
-
-	if not args.no_media:
-		print("Downloading media (this may take a while)...")
+		# Load profile to get total
 		try:
-			# If requested, download only video posts (mp4)
-			if args.only_videos:
-				print("Downloading only video posts (mp4)...")
-				count = 0
-				import subprocess
-				def delete_related_files(basepath):
-					exts = [".jpg", ".txt", ".json.xz", ".json", ".webp", ".mp4"]
-					for ext in exts:
-						f = basepath + ext
-						if os.path.exists(f):
-							try:
-								os.remove(f)
-								print(f"Deleted {f}")
-							except Exception:
-								print(f"Failed to delete {f}")
-					# Also delete thumbnail generated by instagrapi: <basename>.mp4.jpg
-					thumb = basepath + ".mp4.jpg"
-					if os.path.exists(thumb):
-						try:
-							os.remove(thumb)
-							print(f"Deleted {thumb}")
-						except Exception:
-							print(f"Failed to delete {thumb}")
+			profile = Profile.from_username(L.context, profile_username)
+			total_reels = sum(1 for post in profile.get_posts() if getattr(post, 'is_video', False))
+			print(f"Total reels available: {total_reels}")
+		except Exception as e:
+			print("Failed to load profile:", e)
+			sys.exit(1)
 
+		print("1. Download and upload ALL reels")
+		print("2. Download and upload in RANGE")
+		sub_choice = input("Enter sub-choice (1-2): ").strip()
+
+		if sub_choice == '1':
+			start, end = 1, None
+			total_in_range = total_reels
+		elif sub_choice == '2':
+			range_input = input("Enter range (e.g., 4,20): ").strip()
+			try:
+				start, end = map(int, range_input.split(','))
+				total_in_range = end - start + 1
+			except:
+				print(json.dumps({"error": "Invalid range"}))
+				sys.exit(1)
+		else:
+			print(json.dumps({"error": "Invalid sub-choice"}))
+			sys.exit(1)
+
+		count = 0
+		reel_count = 0
+		for post in profile.get_posts():
+			if getattr(post, 'is_video', False):
+				reel_count += 1
+				if reel_count < start:
+					continue
+				if end and reel_count > end:
+					break
 				try:
-					for post in profile.get_posts():
-						if getattr(post, 'is_video', False):
-							L.download_post(post, target=username)
-							# Find the downloaded mp4 file
-							base = os.path.join(dest, username, f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S_UTC')}")
-							mp4_path = base + ".mp4"
-							caption = post.caption or ""
-							if os.path.exists(mp4_path):
-								print(f"Uploading {mp4_path}...")
-								try:
-									subprocess.run([
-										sys.executable,
-										os.path.join(os.path.dirname(__file__), "instagrapi_upload.py"),
-										"--video", mp4_path,
-										"--caption", caption,
-										"--session", "session.json"
-									], check=True)
-								except Exception as e:
-									print(f"Upload failed for {mp4_path}: {e}")
-								# Delete all related files
-								delete_related_files(base)
-							else:
-								print(f"Video file not found: {mp4_path}")
-							count += 1
+					L.download_post(post, target=profile_username)
+
+					base = os.path.join(dest, profile_username, f"{post.date_utc.strftime('%Y-%m-%d_%H-%M-%S_UTC')}")
+					mp4_path = base + ".mp4"
+
+					if os.path.exists(mp4_path):
+						caption = post.caption or ""
+						upload_video(cl, mp4_path, caption)
+						delete_related_files(base)
+						count += 1
+						wait_time = random.randint(20 * 60, 60 * 60)
+						print(f"{count}/{total_in_range} done - waiting {wait_time // 60} min before next")
+						time.sleep(wait_time)
+					else:
+						print(json.dumps({"error": f"Video file not found: {mp4_path}"}))
 				except Exception as e:
-					print("Error while downloading/uploading video posts:", e)
-				print(f"Downloaded and uploaded {count} video posts (if any).")
-				# Delete metadata file after all uploads/cleanups
-				if os.path.exists(meta_path):
-					try:
-						os.remove(meta_path)
-						print(f"Deleted metadata file {meta_path}")
-					except Exception:
-						print(f"Failed to delete metadata file {meta_path}")
-				# Delete the profile's download folder if empty
-				profile_folder = os.path.join(dest, username)
-				if os.path.isdir(profile_folder):
-					try:
-						if not os.listdir(profile_folder):
-							os.rmdir(profile_folder)
-							print(f"Deleted profile folder {profile_folder}")
-						else:
-							print(f"Profile folder {profile_folder} not empty, not deleted.")
-					except Exception:
-						print(f"Failed to delete profile folder {profile_folder}")
-			else:
-				# Download profile posts (images & videos)
-				L.download_profile(username, profile_pic_only=False)
+					print(json.dumps({"error": f"Failed to process reel {reel_count}: {str(e)}"}))
 
-			# Attempt to download stories and highlights if logged in
-			if logged_in:
-				try:
-					L.download_stories(userids=[profile.userid])
-				except Exception:
-					pass
+		profile_folder = os.path.join(dest, profile_username)
+		if os.path.isdir(profile_folder):
+			try:
+				if not os.listdir(profile_folder):
+					os.rmdir(profile_folder)
+			except Exception:
+				pass
+		print(f"Processed {count} reels.")
+
+	elif choice == '3':
+		# Download only
+		profile_input = input("Enter Instagram username or profile link: ").strip()
+		try:
+			profile_username = extract_username(profile_input)
 		except Exception as e:
-			print("Error while downloading media:", e)
+			print("Error parsing profile input:", e)
+			sys.exit(1)
+
+		download_profile(L, profile_username)
+
+	elif choice == '4':
+		# Upload only
+		video_path = input("Enter path to video file: ").strip()
+		caption = input("Enter caption: ").strip()
+		if os.path.exists(video_path):
+			upload_video(cl, video_path, caption)
+		else:
+			print("Video file not found")
+
+	else:
+		print("Invalid choice")
 
 
 if __name__ == "__main__":
