@@ -62,21 +62,41 @@ def main():
 			print(e)
 			sys.exit(1)
 
-		result = download_single_reel(L, shortcode, dest)
-		if result:
-			mp4_path, caption = result
-			print(f"Uploading {mp4_path}...")
-			upload_video(cl, mp4_path, caption)
-			base = mp4_path[:-4]  # remove .mp4
-			delete_related_files(base)
+		try:
+			media_pk = cl.media_pk_from_url(reel_link)
 
-		download_folder = os.path.join(dest, "reel_download")
-		if os.path.isdir(download_folder):
-			try:
-				if not os.listdir(download_folder):
-					os.rmdir(download_folder)
-			except Exception:
-				pass
+			print("Fetching reel info via private API...")
+			media_data = cl.private_request(f"media/{media_pk}/info/")
+
+			# Extract video URL safely
+			video_url = media_data["items"][0]["video_versions"][0]["url"]
+			caption = media_data["items"][0].get("caption", {}).get("text", "")
+
+			# Create temp folder for single reel
+			single_reel_dir = os.path.join(dest, "single_reel")
+			os.makedirs(single_reel_dir, exist_ok=True)
+			filename = os.path.join(single_reel_dir, f"reel_{media_pk}.mp4")
+
+			# Download video manually
+			import requests
+			print("Downloading reel video...")
+			r = requests.get(video_url, stream=True)
+			with open(filename, "wb") as f:
+				for chunk in r.iter_content(chunk_size=8192):
+					if chunk:
+						f.write(chunk)
+
+			print(f"Uploading {filename}...")
+			upload_video(cl, filename, caption)
+
+			# Delete the entire temporary folder (MP4, JPG, JSON, etc.)
+			import shutil
+			shutil.rmtree(single_reel_dir, ignore_errors=True)
+
+		except Exception as e:
+			print("Failed to process single reel:", e)
+			sys.exit(1)
+
 
 	elif choice == '2':
 		# Profile reels
